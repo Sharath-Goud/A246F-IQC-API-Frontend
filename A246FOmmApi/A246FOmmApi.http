@@ -1,0 +1,6 @@
+@A246FOmmApi_HostAddress = http://localhost:5142
+
+GET {{A246FOmmApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
