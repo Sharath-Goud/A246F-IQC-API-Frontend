@@ -82,6 +82,7 @@ namespace A246FOmmApi.Controllers
                 string company = ReadCell(5, 2);
                 string machine = ReadCell(5, 5);
                 string reportTimeText = ReadCell(1, 7);
+                string parameter = Path.GetFileNameWithoutExtension(uploadedFileName).Trim();
 
                 if (string.IsNullOrWhiteSpace(partName))
                 {
@@ -129,24 +130,81 @@ namespace A246FOmmApi.Controllers
                     });
                 }
 
-                // Validate Excel measurement header
-                if (!string.Equals(
-                        ReadCell(7, 2),
-                        "Content",
-                        StringComparison.OrdinalIgnoreCase))
+
+                // ==========================================
+                // DYNAMIC EXCEL VALIDATION
+                // Based on standard FAI 5-2.xlsx headers
+                // ==========================================
+
+                int headerRow = 7;
+                int dataStartRow = 8;
+
+                // STEP 1: Identify all Excel columns by header name
+
+                var headerColumns = new Dictionary<string, int>(
+                    StringComparer.OrdinalIgnoreCase);
+
+                int lastColumn = sheet.Row(headerRow)
+                    .LastCellUsed()?.Address.ColumnNumber ?? 0;
+
+                for (int col = 1; col <= lastColumn; col++)
+                {
+                    string header = ReadCell(headerRow, col).Trim();
+
+                    if (string.IsNullOrWhiteSpace(header))
+                        continue;
+
+                    if (headerColumns.ContainsKey(header))
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = $"Duplicate header found: {header}"
+                        });
+                    }
+
+                    headerColumns.Add(header, col);
+                }
+
+                // STEP 2: Required standard columns
+
+                string[] requiredHeaders =
+                {
+    "Content",
+    "Actual",
+    "Nominal",
+    "UpTol",
+    "LowTol"
+};
+
+                var missingHeaders = requiredHeaders
+                    .Where(h => !headerColumns.ContainsKey(h))
+                    .ToList();
+
+                if (missingHeaders.Count > 0)
                 {
                     return BadRequest(new
                     {
                         success = false,
                         fileName = uploadedFileName,
-                        message = "Unexpected Excel layout. Content header not found in B7."
+                        message = "Missing required columns: " +
+                                  string.Join(", ", missingHeaders)
                     });
                 }
 
+                // STEP 3: Get dynamic column positions
+
+                int contentCol = headerColumns["Content"];
+                int actualCol = headerColumns["Actual"];
+                int nominalCol = headerColumns["Nominal"];
+                int upTolCol = headerColumns["UpTol"];
+                int lowTolCol = headerColumns["LowTol"];
+
+                // STEP 4: Initialize measurement variables
+
                 var measurements = new List<string>();
 
-                string parameter = string.Empty;
-
+                string? samplingPlan = null;
                 decimal nominalValue = 0;
                 decimal upperTolerance = 0;
                 decimal lowerTolerance = 0;
@@ -155,7 +213,7 @@ namespace A246FOmmApi.Controllers
 
                 int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 0;
 
-                if (lastRow < 8)
+                if (lastRow < dataStartRow)
                 {
                     return BadRequest(new
                     {
@@ -164,11 +222,12 @@ namespace A246FOmmApi.Controllers
                     });
                 }
 
-                // Read measurement values and first measurement specifications
-                for (int row = 8; row <= lastRow; row++)
+                // STEP 5: Read measurement data
+
+                for (int row = dataStartRow; row <= lastRow; row++)
                 {
-                    string content = ReadCell(row, 2);
-                    string actual = ReadCell(row, 3);
+                    string content = ReadCell(row, contentCol);
+                    string actual = ReadCell(row, actualCol);
 
                     if (string.IsNullOrWhiteSpace(content))
                         continue;
@@ -185,14 +244,18 @@ namespace A246FOmmApi.Controllers
                         out decimal actualValue))
                         continue;
 
-                    // Read specifications from the first valid measurement row
+                    // Read specification values from first valid row
+
                     if (firstMeasurementRow == 0)
                     {
-                        parameter = content;
                         firstMeasurementRow = row;
 
+                        string nominalText = ReadCell(row, nominalCol);
+                        string upTolText = ReadCell(row, upTolCol);
+                        string lowTolText = ReadCell(row, lowTolCol);
+
                         if (!decimal.TryParse(
-                            ReadCell(row, 4),
+                            nominalText,
                             NumberStyles.Any,
                             CultureInfo.InvariantCulture,
                             out nominalValue))
@@ -200,12 +263,12 @@ namespace A246FOmmApi.Controllers
                             return BadRequest(new
                             {
                                 success = false,
-                                message = $"Invalid Nominal value at row {row}."
+                                message = $"Invalid Nominal value at row {row}: {nominalText}"
                             });
                         }
 
                         if (!decimal.TryParse(
-                            ReadCell(row, 6),
+                            upTolText,
                             NumberStyles.Any,
                             CultureInfo.InvariantCulture,
                             out upperTolerance))
@@ -213,12 +276,12 @@ namespace A246FOmmApi.Controllers
                             return BadRequest(new
                             {
                                 success = false,
-                                message = $"Invalid UpTol value at row {row}."
+                                message = $"Invalid UpTol value at row {row}: {upTolText}"
                             });
                         }
 
                         if (!decimal.TryParse(
-                            ReadCell(row, 7),
+                            lowTolText,
                             NumberStyles.Any,
                             CultureInfo.InvariantCulture,
                             out lowerTolerance))
@@ -226,7 +289,7 @@ namespace A246FOmmApi.Controllers
                             return BadRequest(new
                             {
                                 success = false,
-                                message = $"Invalid LowTol value at row {row}."
+                                message = $"Invalid LowTol value at row {row}: {lowTolText}"
                             });
                         }
                     }
@@ -236,20 +299,22 @@ namespace A246FOmmApi.Controllers
                             CultureInfo.InvariantCulture));
                 }
 
-                if (measurements.Count != 32)
+
+                if (measurements.Count < 1 || measurements.Count > 32)
                 {
                     return BadRequest(new
                     {
                         success = false,
                         fileName = uploadedFileName,
                         message =
-                            $"Expected 32 measurements but found {measurements.Count}. " +
+                            $"Expected between 1 and 32 measurements, but found {measurements.Count}. " +
                             "The file was not saved."
                     });
                 }
 
-                decimal uslValue = nominalValue + upperTolerance;
-                decimal lslValue = nominalValue + lowerTolerance;
+                samplingPlan = $"{measurements.Count}x/Lot";
+                decimal uslValue = upperTolerance;
+                decimal lslValue = lowerTolerance;
 
                 if (string.IsNullOrWhiteSpace(parameter))
                 {
@@ -271,8 +336,6 @@ namespace A246FOmmApi.Controllers
 
                 try
                 {
-                    // Find exactly one matching template.
-                    // Do not select an arbitrary template if duplicates exist.
                     const string templateSql = """
                     SELECT
                         TEMPLATE_ID,
@@ -291,16 +354,20 @@ namespace A246FOmmApi.Controllers
                         NOMINAL,
                         USL,
                         LSL,
-                        [Unique Identifier]
-                    FROM dbo.IPQC_TEMPLATE_A246F
+                        [Unique Identifier],
+                        WOM,
+                        LOT_ID,
+                        LINE_ID
+                    FROM [master].[dbo].[IPQC_TEMPLATE_A246F]
                     WHERE
-                        REPLACE(UPPER(LTRIM(RTRIM(PART))), ' ', '') = @PartKey
-                        AND UPPER(LTRIM(RTRIM(STATION_ID))) = @Station
-                        AND ABS(TRY_CONVERT(DECIMAL(18,6), NOMINAL) - @Nominal) < 0.000001
-                        AND ABS(TRY_CONVERT(DECIMAL(18,6), USL) - @USL) < 0.000001
-                        AND ABS(TRY_CONVERT(DECIMAL(18,6), LSL) - @LSL) < 0.000001;
+                        UPPER(LTRIM(RTRIM(PART))) = @Part
+                        AND UPPER(LTRIM(RTRIM(VENDOR))) = @Vendor
+                        AND REPLACE(
+                            UPPER(LTRIM(RTRIM(PARAMETER))),
+                            '/',
+                            ''
+                        ) = @Parameter
                     """;
-
                     long templateId;
                     string? project;
                     string? site;
@@ -313,47 +380,29 @@ namespace A246FOmmApi.Controllers
                     string? category;
                     string? templateParameter;
                     string? unit;
-                    string? samplingPlan;
                     string? nominal;
                     string? usl;
                     string? lsl;
                     string? uniqueIdentifier;
+                    string? wom;
+                    string? lotId;
+                    string? lineId;
 
                     await using (var command =
                         new SqlCommand(templateSql, connection, transaction))
                     {
-                        string partKey = partName
-                        .Replace(" ", "")
-                        .Trim()
-                        .ToUpperInvariant();
+                        string partValue = partName.Trim().ToUpperInvariant();
 
-                        command.Parameters.Add(
-                            "@PartKey",
-                            SqlDbType.VarChar,
-                            100).Value = partKey;
+                        string vendorValue = company.Trim().ToUpperInvariant();
 
-                        command.Parameters.Add(
-                            "@Station",
-                            SqlDbType.VarChar,
-                            100).Value = machine.Trim().ToUpperInvariant();
+                        string parameterValue = parameter
+                            .Trim()
+                            .ToUpperInvariant()
+                            .Replace("/", "");
 
-                        var nominalParam = command.Parameters.Add(
-                            "@Nominal", SqlDbType.Decimal);
-                        nominalParam.Precision = 18;
-                        nominalParam.Scale = 6;
-                        nominalParam.Value = nominalValue;
-
-                        var uslParam = command.Parameters.Add(
-                            "@USL", SqlDbType.Decimal);
-                        uslParam.Precision = 18;
-                        uslParam.Scale = 6;
-                        uslParam.Value = uslValue;
-
-                        var lslParam = command.Parameters.Add(
-                            "@LSL", SqlDbType.Decimal);
-                        lslParam.Precision = 18;
-                        lslParam.Scale = 6;
-                        lslParam.Value = lslValue;
+                        command.Parameters.Add("@Part", SqlDbType.VarChar, 150).Value = partValue;
+                        command.Parameters.Add("@Vendor", SqlDbType.VarChar, 150).Value = vendorValue;
+                        command.Parameters.Add("@Parameter", SqlDbType.VarChar, 150).Value = parameterValue;
 
                         await using var reader =
                             await command.ExecuteReaderAsync(cancellationToken);
@@ -365,7 +414,7 @@ namespace A246FOmmApi.Controllers
                                 success = false,
                                 message =
                                     $"No template found for Part='{partName}', " +
-                                    $"Parameter='{parameter}', Station='{machine}'. " +
+                                    $"Vendor='{company}', Parameter='{parameter}'. " +
                                     "No report was saved."
                             });
                         }
@@ -382,11 +431,14 @@ namespace A246FOmmApi.Controllers
                         category = GetNullableString(reader, 9);
                         templateParameter = GetNullableString(reader, 10);
                         unit = GetNullableString(reader, 11);
-                        samplingPlan = GetNullableString(reader, 12);
-                        nominal = GetNullableString(reader, 13);
-                        usl = GetNullableString(reader, 14);
-                        lsl = GetNullableString(reader, 15);
+                        //samplingPlan = GetNullableString(reader, 12);
+                        //nominal = GetNullableString(reader, 13);
+                        //usl = GetNullableString(reader, 14);
+                        //lsl = GetNullableString(reader, 15);
                         uniqueIdentifier = GetNullableString(reader, 16);
+                        wom = GetNullableString(reader, 17);
+                        lotId = GetNullableString(reader, 18);
+                        lineId = GetNullableString(reader, 19);
 
                         if (await reader.ReadAsync(cancellationToken))
                         {
@@ -500,7 +552,7 @@ namespace A246FOmmApi.Controllers
                                 SqlDbType.Int).Value = value;
                         }
 
-                        AddNVarChar(null, 10); 
+                        AddNVarChar(wom, 50);
 
                         AddNVarChar(project, 100);
                         AddNVarChar(site, 100);
@@ -511,8 +563,8 @@ namespace A246FOmmApi.Controllers
                         AddNVarChar(templatePart ?? partName, 150);
                         AddNVarChar(vendor ?? company, 150);
 
-                        AddNVarChar(null, 100); 
-                        AddNVarChar(null, 50);  
+                        AddNVarChar(partNumber, 100);
+                        AddNVarChar(lineId, 50);
 
                         AddNVarChar(process, 100);
                         AddNVarChar(category, 100);
@@ -522,16 +574,33 @@ namespace A246FOmmApi.Controllers
                         AddNVarChar(unit, 20);
                         AddNVarChar(samplingPlan, 50);
 
-                        AddNVarChar(nominal, 50);
-                        AddNVarChar(usl, 50);
-                        AddNVarChar(lsl, 50);
+                        AddNVarChar(
+                            nominalValue.ToString("0.###", CultureInfo.InvariantCulture),
+                            50);
+
+                        AddNVarChar(
+                            uslValue.ToString("0.###", CultureInfo.InvariantCulture),
+                            50);
+
+                        AddNVarChar(
+                            lslValue.ToString("0.###", CultureInfo.InvariantCulture),
+                            50);
 
                         AddDateTime(reportTime);
 
-                        foreach (string measurement in measurements)
+
+                        for (int i = 0; i < 32; i++)
                         {
-                            AddNVarChar(measurement, 50);
+                            if (i < measurements.Count)
+                            {
+                                AddNVarChar(measurements[i], 50);
+                            }
+                            else
+                            {
+                                AddNVarChar(null, 50);
+                            }
                         }
+
 
                         AddNVarChar(uploadedFileName, 260);
                         AddInt(firstMeasurementRow);
