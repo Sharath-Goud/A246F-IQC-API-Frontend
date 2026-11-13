@@ -170,12 +170,9 @@ namespace A246FOmmApi.Controllers
 
                 string[] requiredHeaders =
                 {
-    "Content",
-    "Actual",
-    "Nominal",
-    "UpTol",
-    "LowTol"
-};
+                    "Content",
+                    "Actual"
+                };
 
                 var missingHeaders = requiredHeaders
                     .Where(h => !headerColumns.ContainsKey(h))
@@ -196,18 +193,13 @@ namespace A246FOmmApi.Controllers
 
                 int contentCol = headerColumns["Content"];
                 int actualCol = headerColumns["Actual"];
-                int nominalCol = headerColumns["Nominal"];
-                int upTolCol = headerColumns["UpTol"];
-                int lowTolCol = headerColumns["LowTol"];
+
 
                 // STEP 4: Initialize measurement variables
 
                 var measurements = new List<string>();
 
                 string? samplingPlan = null;
-                decimal nominalValue = 0;
-                decimal upperTolerance = 0;
-                decimal lowerTolerance = 0;
 
                 int firstMeasurementRow = 0;
 
@@ -244,54 +236,9 @@ namespace A246FOmmApi.Controllers
                         out decimal actualValue))
                         continue;
 
-                    // Read specification values from first valid row
-
                     if (firstMeasurementRow == 0)
                     {
                         firstMeasurementRow = row;
-
-                        string nominalText = ReadCell(row, nominalCol);
-                        string upTolText = ReadCell(row, upTolCol);
-                        string lowTolText = ReadCell(row, lowTolCol);
-
-                        if (!decimal.TryParse(
-                            nominalText,
-                            NumberStyles.Any,
-                            CultureInfo.InvariantCulture,
-                            out nominalValue))
-                        {
-                            return BadRequest(new
-                            {
-                                success = false,
-                                message = $"Invalid Nominal value at row {row}: {nominalText}"
-                            });
-                        }
-
-                        if (!decimal.TryParse(
-                            upTolText,
-                            NumberStyles.Any,
-                            CultureInfo.InvariantCulture,
-                            out upperTolerance))
-                        {
-                            return BadRequest(new
-                            {
-                                success = false,
-                                message = $"Invalid UpTol value at row {row}: {upTolText}"
-                            });
-                        }
-
-                        if (!decimal.TryParse(
-                            lowTolText,
-                            NumberStyles.Any,
-                            CultureInfo.InvariantCulture,
-                            out lowerTolerance))
-                        {
-                            return BadRequest(new
-                            {
-                                success = false,
-                                message = $"Invalid LowTol value at row {row}: {lowTolText}"
-                            });
-                        }
                     }
 
                     measurements.Add(
@@ -313,8 +260,6 @@ namespace A246FOmmApi.Controllers
                 }
 
                 samplingPlan = $"{measurements.Count}x/Lot";
-                decimal uslValue = upperTolerance;
-                decimal lslValue = lowerTolerance;
 
                 if (string.IsNullOrWhiteSpace(parameter))
                 {
@@ -431,10 +376,10 @@ namespace A246FOmmApi.Controllers
                         category = GetNullableString(reader, 9);
                         templateParameter = GetNullableString(reader, 10);
                         unit = GetNullableString(reader, 11);
-                        //samplingPlan = GetNullableString(reader, 12);
-                        //nominal = GetNullableString(reader, 13);
-                        //usl = GetNullableString(reader, 14);
-                        //lsl = GetNullableString(reader, 15);
+                        samplingPlan = GetNullableString(reader, 12);
+                        nominal = GetNullableString(reader, 13);
+                        usl = GetNullableString(reader, 14);
+                        lsl = GetNullableString(reader, 15);
                         uniqueIdentifier = GetNullableString(reader, 16);
                         wom = GetNullableString(reader, 17);
                         lotId = GetNullableString(reader, 18);
@@ -573,19 +518,9 @@ namespace A246FOmmApi.Controllers
 
                         AddNVarChar(unit, 20);
                         AddNVarChar(samplingPlan, 50);
-
-                        AddNVarChar(
-                            nominalValue.ToString("0.###", CultureInfo.InvariantCulture),
-                            50);
-
-                        AddNVarChar(
-                            uslValue.ToString("0.###", CultureInfo.InvariantCulture),
-                            50);
-
-                        AddNVarChar(
-                            lslValue.ToString("0.###", CultureInfo.InvariantCulture),
-                            50);
-
+                        AddNVarChar(nominal, 50);
+                        AddNVarChar(usl, 50);
+                        AddNVarChar(lsl, 50);
                         AddDateTime(reportTime);
 
 
